@@ -19,6 +19,7 @@
 #include <string.h>
 
 #include "src/commander.h"
+#include "src/edit.h"
 #include "src/hash.h"
 #include "src/iqa/include/iqa.h"
 #include "src/util.h"
@@ -37,6 +38,9 @@ int method = FAST;
 // Hash size when method is FAST
 int size = 16;
 
+// Use PPM input?
+int ppm = 0;
+
 static void setSize(command_t *self) {
     size = atoi(self->arg);
 }
@@ -53,6 +57,10 @@ static void setMethod(command_t *self) {
     } else {
         method = UNKNOWN;
     }
+}
+
+static void setPpm(command_t *self) {
+    ppm = 1;
 }
 
 int compareFast(const char *filename1, const char *filename2) {
@@ -80,7 +88,7 @@ int compareFast(const char *filename1, const char *filename2) {
 }
 
 int compare(const char *filename1, const char *filename2) {
-    unsigned char *image1, *image2;
+    unsigned char *image1, *image2, *image1Gray = NULL;
     int width1, width2, height1, height2;
     int format, components;
     float diff;
@@ -91,16 +99,29 @@ int compare(const char *filename1, const char *filename2) {
             format = JCS_RGB;
             components = 3;
             break;
-        case SSIM: case MS_SSIM:
+        case SSIM: case MS_SSIM: default:
             format = JCS_GRAYSCALE;
             components = 1;
             break;
     }
 
     // Decode files
-    if (!decodeJpegFile(filename1, &image1, &width1, &height1, format)) {
-        printf("Error decoding %s\n", filename1);
-        return 1;
+    if (ppm) {
+        if (!decodePpmFile(filename1, &image1, &width1, &height1)) {
+            printf("Error decoding %s\n", filename1);
+            return 1;
+        }
+
+        if (1 == components) {
+            grayscale(image1, &image1Gray, width1, height1);
+            free(image1);
+            image1 = image1Gray;
+        }
+    } else {
+        if (!decodeJpegFile(filename1, &image1, &width1, &height1, format)) {
+            printf("Error decoding %s\n", filename1);
+            return 1;
+        }
     }
 
     if (!decodeJpegFile(filename2, &image2, &width2, &height2, format)) {
@@ -120,13 +141,13 @@ int compare(const char *filename1, const char *filename2) {
             diff = iqa_psnr(image1, image2, width1, height1, width1 * components);
             printf("PSNR: %f\n", diff);
             break;
-        case SSIM:
-            diff = iqa_ssim(image1, image2, width1, height1, width1 * components, 0, 0);
-            printf("SSIM: %f\n", diff);
-            break;
         case MS_SSIM:
             diff = iqa_ms_ssim(image1, image2, width1, height1, width1 * components, 0);
             printf("MS-SSIM: %f\n", diff);
+            break;
+        case SSIM: default:
+            diff = iqa_ssim(image1, image2, width1, height1, width1 * components, 0, 0);
+            printf("SSIM: %f\n", diff);
             break;
     }
 
@@ -142,10 +163,11 @@ int main (int argc, char **argv) {
 
     // Parse commandline options
     command_t cmd;
-    command_init(&cmd, argv[0], "1.0.1");
+    command_init(&cmd, argv[0], VERSION);
     cmd.usage = "[options] image1.jpg image2.jpg";
     command_option(&cmd, "-s", "--size [arg]", "Set fast comparison image hash size", setSize);
     command_option(&cmd, "-m", "--method [arg]", "Set comparison method to one of 'fast', 'psnr', 'ssim', or 'ms-ssim' [fast]", setMethod);
+    command_option(&cmd, "-r", "--ppm", "Parse first input as PPM instead of JPEG", setPpm);
     command_parse(&cmd, argc, argv);
 
     if (cmd.argc < 2) {

@@ -2,25 +2,28 @@ CC ?= gcc
 CFLAGS += -std=c99 -Wall -O3
 LDFLAGS += -lm
 MAKE ?= make
+PREFIX ?= /usr/local
 
 UNAME_S := $(shell uname -s)
-UNAME_P := $(shell uname -p)
+UNAME_M := $(shell uname -m)
 
 ifeq ($(UNAME_S),Linux)
 	# Linux (e.g. Ubuntu)
-	ifeq ($(UNAME_P),x86_64)
-		LIBJPEG = /usr/lib/x86_64-linux-gnu/libjpeg.a
+	CFLAGS += -I/opt/libmozjpeg/include
+	ifeq ($(UNAME_M),x86_64)
+		LIBJPEG = /opt/libmozjpeg/lib64/libjpeg.a
 	else
-		LIBJPEG = /usr/lib/i386-linux-gnu/libjpeg.a
+		LIBJPEG = /opt/libmozjpeg/lib/libjpeg.a
 	endif
 else
 	ifeq ($(UNAME_S),Darwin)
 		# Mac OS X
-		LIBJPEG = /usr/local/opt/jpeg-turbo/lib/libjpeg.a
+		LIBJPEG = /usr/local/opt/mozjpeg/lib/libjpeg.a
+		CFLAGS += -I/usr/local/opt/mozjpeg/include
 	else
 		# Windows
-		LIBJPEG = C:\libjpeg-turbo-gcc\lib\libjpeg.a
-		CFLAGS += -IC:\libjpeg-turbo-gcc\include
+		LIBJPEG = ../mozjpeg/libjpeg.a
+		CFLAGS += -I../mozjpeg
 		MAKE = mingw32-make
 	endif
 endif
@@ -32,10 +35,10 @@ all: jpeg-recompress jpeg-compare jpeg-hash
 $(LIBIQA):
 	cd src/iqa; RELEASE=1 $(MAKE)
 
-jpeg-recompress: jpeg-recompress.c src/util.o src/edit.o src/commander.o $(LIBIQA)
+jpeg-recompress: jpeg-recompress.c src/util.o src/edit.o src/smallfry.o src/commander.o $(LIBIQA)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBJPEG) $(LDFLAGS)
 
-jpeg-compare: jpeg-compare.c src/util.o src/hash.o src/commander.o $(LIBIQA)
+jpeg-compare: jpeg-compare.c src/util.o src/hash.o src/edit.o src/commander.o $(LIBIQA)
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBJPEG) $(LDFLAGS)
 
 jpeg-hash: jpeg-hash.c src/util.o src/hash.o src/commander.o
@@ -48,10 +51,12 @@ test: test.c src/util.o src/edit.o src/hash.o
 	$(CC) $(CFLAGS) -o $@ $^ $(LIBJPEG) $(LDFLAGS)
 	./test
 
-install:
-	cp jpeg-recompress /usr/local/bin/
-	cp jpeg-compare /usr/local/bin/
-	cp jpeg-hash /usr/local/bin/
+install: all
+	mkdir -p $(PREFIX)/bin
+	cp jpeg-archive $(PREFIX)/bin/
+	cp jpeg-recompress $(PREFIX)/bin/
+	cp jpeg-compare $(PREFIX)/bin/
+	cp jpeg-hash $(PREFIX)/bin/
 
 clean:
-	rm -rf jpeg-recompress jpeg-compare jpeg-hash src/*.o src/iqa/build
+	rm -rf jpeg-recompress jpeg-compare jpeg-hash test src/*.o src/iqa/build

@@ -4,10 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define INPUT_BUFFER_SIZE 102400
+
+const char *VERSION = "2.0.1";
+
 long readFile(char *name, void **buffer) {
     FILE *file;
-    long fileLen;
-    size_t result;
+    size_t fileLen = 0;
+    size_t bytesRead = 0;
+
+    unsigned char chunk[INPUT_BUFFER_SIZE];
 
     // Open file
     if (strcmp("-", name) == 0) {
@@ -21,28 +27,20 @@ long readFile(char *name, void **buffer) {
             return 0;
         }
     }
-    
-    // Get file length
-    fseek(file, 0, SEEK_END);
-    fileLen = ftell(file);
-    rewind(file);
 
-    // Allocate memory
-    *buffer = malloc(fileLen + 1);
-    if (!buffer)
-    {
-        fprintf(stderr, "Memory error!\n");
-        fclose(file);
-        return 0;
-    }
-
-    // Read file contents into buffer
-    result = fread(*buffer, 1, fileLen, file);
-
-    if (result != fileLen) {
-        fprintf(stderr, "Only able to read %zu bytes!\n", result);
-        fclose(file);
-        return 0;
+    *buffer = malloc(sizeof chunk);
+    while ((bytesRead = fread(chunk, 1, sizeof chunk, file)) > 0) {
+        unsigned char *reallocated = realloc(*buffer, fileLen + bytesRead);
+        if (reallocated) {
+            *buffer = reallocated;
+            memmove((unsigned char *)(*buffer) + fileLen, chunk, bytesRead);
+            fileLen += bytesRead;
+        } else {
+            fprintf(stderr, "Only able to read %zu bytes!\n", fileLen);
+            free(*buffer);
+            fclose(file);
+            return 0;
+        }
     }
 
     fclose(file);
@@ -50,7 +48,7 @@ long readFile(char *name, void **buffer) {
 }
 
 unsigned long decodeJpegFile(const char *filename, unsigned char **image, int *width, int *height, int pixelFormat) {
-    unsigned char *buf;
+    unsigned char *buf = NULL;
     long bufSize = 0;
 
     bufSize = readFile((char *) filename, (void **) &buf);
@@ -106,12 +104,12 @@ unsigned long decodeJpeg(unsigned char *buf, unsigned long bufSize, unsigned cha
     return row_stride * (*height);
 }
 
-unsigned long encodeJpeg(unsigned char **jpeg, unsigned char *buf, int width, int height, int pixelFormat, int quality, int progressive) {
+unsigned long encodeJpeg(unsigned char **jpeg, unsigned char *buf, int width, int height, int pixelFormat, int quality, int progressive, int optimize) {
     long unsigned int jpegSize = 0;
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
     JSAMPROW row_pointer[1];
-    int row_stride = width * 3;
+    int row_stride = width * (pixelFormat == JCS_RGB ? 3 : 1);
 
     cinfo.err = jpeg_std_error(&jerr);
 
@@ -126,14 +124,25 @@ unsigned long encodeJpeg(unsigned char **jpeg, unsigned char *buf, int width, in
     cinfo.input_components = pixelFormat == JCS_RGB ? 3 : 1;
     cinfo.in_color_space = pixelFormat;
 
+    if (optimize) {
+        cinfo.use_moz_defaults = TRUE;
+    }
+
     jpeg_set_defaults(&cinfo);
 
-    jpeg_set_quality(&cinfo, quality, TRUE);
-    cinfo.optimize_coding = TRUE;
+    if (optimize && !progressive) {
+        // Moz defaults, disable progressive
+        cinfo.scan_info = NULL;
+        cinfo.num_scans = 0;
+        cinfo.optimize_scans = FALSE;
+    }
 
-    if (progressive) {
+    if (!optimize && progressive) {
+        // No moz defaults, set scan progression
         jpeg_simple_progression(&cinfo);
     }
+
+    jpeg_set_quality(&cinfo, quality, TRUE);
 
     // Start the compression
     jpeg_start_compress(&cinfo, TRUE);
@@ -150,6 +159,69 @@ unsigned long encodeJpeg(unsigned char **jpeg, unsigned char *buf, int width, in
     return jpegSize;
 }
 
+unsigned long decodePpmFile(const char *filename, unsigned char **image, int *width, int *height) {
+    unsigned char *buf = NULL;
+    long bufSize = 0;
+
+    bufSize = readFile((char *) filename, (void **) &buf);
+
+    if (!bufSize) { return 0; }
+
+    return decodePpm(buf, bufSize, image, width, height);
+}
+
+unsigned long decodePpm(unsigned char *buf, unsigned long bufSize, unsigned char **image, int *width, int *height) {
+    unsigned long pos = 0, imageDataSize;
+    int depth;
+
+    if (bufSize < 2 || buf[0] != 'P' || buf[1] != '6') {
+        fprintf(stderr, "Not a valid PPM format image!\n");
+        return 0;
+    }
+
+    // Read to first newline
+    while (buf[pos++] != '\n') {}
+
+    // Discard for any comment lines
+    while (buf[pos] == '#') {
+        while (buf[pos] != '\n') {
+            pos++;
+        }
+        pos++;
+    }
+
+    // Read width/height
+    sscanf((const char *) buf + pos, "%d %d", width, height);
+
+    // Go to next line
+    while (buf[pos++] != '\n') {}
+
+    // Read bit depth
+    sscanf((const char*) buf + pos, "%d", &depth);
+
+    if (depth != 255) {
+        fprintf(stderr, "Unsupported bit depth %d!\n", depth);
+        return 0;
+    }
+
+    // Go to next line
+    while (buf[pos++] != '\n') {}
+
+    // Width * height * red/green/blue
+    imageDataSize = (*width) * (*height) * 3;
+    if (pos + imageDataSize != bufSize) {
+        fprintf(stderr, "Incorrect image size! %lu vs. %lu\n", bufSize, pos + imageDataSize);
+        return 0;
+    }
+
+    // Allocate image pixel buffer
+    *image = malloc(imageDataSize);
+
+    // Copy pixel data
+    memcpy((void *) *image, (void *) buf + pos, imageDataSize);
+
+    return (*width) * (*height);
+}
 
 int getMetadata(const unsigned char *buf, unsigned int bufSize, unsigned char **meta, unsigned int *metaSize, const char *comment) {
     unsigned int pos = 0;
